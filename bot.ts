@@ -3,6 +3,7 @@ import {
     Context,
     session,
     SessionFlavor,
+    GrammyError
 } from "https://deno.land/x/grammy@v1.21.1/mod.ts";
 import {freeStorage} from "https://deno.land/x/grammy_storages@v2.4.2/free/src/mod.ts";
 
@@ -21,7 +22,7 @@ type SessionData = {
 type MyContext = Context & SessionFlavor<SessionData>;
 
 // Create the bot and register the session middleware.
-const bot = new Bot<MyContext>("5645084229:AAE9ykbfTtYQgpRWxpqEawHFh_xNeNykegA");
+const bot = new Bot<MyContext>("");
 
 bot.use(session({
     initial: () => ({
@@ -79,9 +80,9 @@ bot.on("my_chat_member:from:me", async (ctx) => {
 
 });
 // Use persistent session data in update handlers.
-bot.on("message", async (ctx) => {
+bot.on("message", async (ctx: MyContext) => {
     await ctx.reply("Hallo :D");
 })
 
-bot.catch((err) => console.error(err));
+bot.catch((err: GrammyError) => console.error(err));
 bot.start();

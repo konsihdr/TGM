@@ -42,6 +42,22 @@ bot.use(
     })
 );
 
+bot.on("chat_member", async (ctx) => {
+    const newStatus = ctx.chatMember?.new_chat_member.status;
+    const isBot = ctx.chatMember?.new_chat_member.user.is_bot;
+    const newMemberId = ctx.chatMember?.new_chat_member.user.id;
+    const botId = bot.botInfo.id;
+
+    if (newStatus === "administrator" && isBot && newMemberId === botId) {
+        // The bot itself has been promoted to an admin
+        // Retry creating an invite link
+        const chatType = ctx.chat?.type;
+        if (chatType === "supergroup" && !ctx.chat?.username) {
+            await handleSupergroupWithoutUsername(ctx, chatType);
+        }
+    }
+});
+
 // Handler for when the bot is added to a group or removed
 bot.on("my_chat_member", async (ctx) => {
     const chatType = ctx.chat?.type;
@@ -75,27 +91,26 @@ bot.on("my_chat_member", async (ctx) => {
             await handleGroup(ctx, chatType);
         }
 
-        // Update the group in the database
-        let joinedDate = new Date(ctx.session.date_added);
-        if (isNaN(joinedDate.getTime())) {
-            // If not valid, use the current date
-            joinedDate = new Date();
-        }
-        await Group.findOneAndUpdate(
-            {tg_id: ctx.session.group_id},
-            {
+        // Find the group in the database
+        const group = await Group.findOne({tg_id: ctx.chat.id});
+
+        // If the group doesn't exist, create a new one
+        if (!group) {
+            let joinedDate = new Date(ctx.session.date_added);
+            if (isNaN(joinedDate.getTime())) {
+                // If not valid, use the current date
+                joinedDate = new Date();
+            }
+            await Group.create({
                 name: ctx.session.group_name,
                 tg_id: ctx.session.group_id,
                 joined: joinedDate,
                 active: ctx.session.active,
-                invite_link: ctx.session.group_url,
                 is_admin: ctx.session.is_admin,
-            },
-            {upsert: true}
-        );
+            });
+        }
     }
 });
-
 // Handler for callback queries
 bot.on("callback_query:data", async (ctx) => {
     const [action, inviteId] = ctx.callbackQuery.data.split("_") ?? "h";
@@ -107,21 +122,7 @@ bot.on("callback_query:data", async (ctx) => {
     }
 });
 
-bot.on("chat_member", async (ctx) => {
-    const newStatus = ctx.chatMember?.new_chat_member.status;
-    const isBot = ctx.chatMember?.new_chat_member.user.is_bot;
-    const newMemberId = ctx.chatMember?.new_chat_member.user.id;
-    const botId = bot.botInfo.id;
 
-    if (newStatus === "administrator" && isBot && newMemberId === botId) {
-        // The bot itself has been promoted to an admin
-        // Retry creating an invite link
-        const chatType = ctx.chat?.type;
-        if (chatType === "supergroup" && !ctx.chat?.username) {
-            await handleSupergroupWithoutUsername(ctx, chatType);
-        }
-    }
-});
 
 bot.command("start", async (ctx) => {
     await ctx.reply("Hello! I am a bot that can help you manage your groups.");
@@ -145,20 +146,24 @@ async function handleSupergroupWithoutUsername(ctx: MyContext, chatType: string)
         return await ctx.reply("This is not a group.");
     }
     try {
-
         const inviteLink = await ctx.api.createChatInviteLink(ctx.chat?.id ?? "h");
         const inviteId = ctx.chat.id;
-        const message = `Bot added to a ${chatType}. Invite link: ${inviteLink.invite_link}`;
-
+        const message = `Bot added to a ${chatType}. Invite link: ${inviteLink.invite_link} 2`;
+        await Group.updateOne(
+            {tg_id: ctx.chat.id},
+            {
+                invite_link: inviteLink.invite_link,
+            }
+        );
         await sendInviteLinkMessage(ctx, message, inviteId);
     } catch (error) {
         console.error("Failed to create an invite link. Error: ", error);
         await ctx.reply("I can't create an invite link. Please check my permissions.");
         const inviteId = ctx.chat.id;
-        await ctx.api.sendMessage(
+        /*await ctx.api.sendMessage(
             ADMIN_GROUP,
             `Bot added to a ${chatType}, but couldn't create an invite link due to insufficient permissions ${ctx.chat.title}.`);
-    }
+    */}
 }
 
 async function handleSupergroupWithUsername(
@@ -192,8 +197,14 @@ async function handleGroup(ctx: MyContext, chatType: string) {
     try {
         const inviteLink = await ctx.api.createChatInviteLink(ctx.chat.id);
         const inviteId = ctx.chat?.id ?? 111;
-        const message = `Bot added to a ${chatType}. Invite link: ${inviteLink.invite_link}`;
-
+        const message = `Bot added to a ${chatType}. Invite link: ${inviteLink.invite_link} 1`;
+        // Update the group in the database
+        await Group.updateOne(
+            {tg_id: ctx.chat.id},
+            {
+                invite_link: inviteLink.invite_link,
+            }
+        );
         await sendInviteLinkMessage(ctx, message, inviteId);
     } catch (error) {
         console.error("Failed to create an invite link. Error: ", error);
@@ -237,11 +248,11 @@ async function handleAcceptAction(ctx: MyContext) {
 
     // Update the group in the database
     await Group.updateOne(
-        {tg_id: ctx.session.group_id},
+        {tg_id: inviteId},
         {
             active: ctx.session.active,
+            banned: ctx.session.banned,
             date_modified: ctx.session.date_modified,
-            invite_link: ctx.session.group_url,
         }
     );
 
@@ -271,7 +282,7 @@ async function handleDenyAction(ctx: MyContext) {
 
     // Update the group in the database
     await Group.updateOne(
-        {tg_id: ctx.session.group_id},
+        {tg_id: inviteId},
         {
             active: ctx.session.active,
             banned: ctx.session.banned,

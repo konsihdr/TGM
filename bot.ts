@@ -1,15 +1,9 @@
 // deno-lint-ignore-file no-unused-vars
-import {
-    Bot,
-    Context,
-    session,
-    SessionFlavor,
-    BotError,
-} from "https://deno.land/x/grammy@v1.21.1/mod.ts";
+import {Bot, BotError, Context, session, SessionFlavor,} from "https://deno.land/x/grammy@v1.21.1/mod.ts";
 import "https://deno.land/std@0.221.0/dotenv/load.ts";
-import { freeStorage } from "https://deno.land/x/grammy_storages@v2.4.2/free/src/mod.ts";
-import { run } from "https://deno.land/x/grammy_runner@v2.0.3/mod.ts";
-
+import {freeStorage} from "https://deno.land/x/grammy_storages@v2.4.2/free/src/mod.ts";
+import {run} from "https://deno.land/x/grammy_runner@v2.0.3/mod.ts";
+import Group from './models/groups.ts';
 
 const ADMIN_GROUP = -1002103808557;
 
@@ -55,6 +49,20 @@ bot.on("my_chat_member", async (ctx) => {
     const isBot = ctx.myChatMember?.new_chat_member.user.is_bot;
 
     if ((newStatus === "member" || newStatus === "administrator") && isBot) {
+        // Set default session data
+        ctx.session.group_url = "none";
+        if ('title' in ctx.chat) {
+            ctx.session.group_name = ctx.chat.title;
+        } else {
+            ctx.session.group_name = "none"; // or any default value
+        }
+        ctx.session.active = false;
+        ctx.session.banned = false;
+        ctx.session.group_id = String(ctx.chat?.id) ?? "none"; // Use the group id from the chat context
+        ctx.session.is_admin = false;
+        ctx.session.date_added = new Date().toISOString();
+        ctx.session.date_modified = new Date().toISOString();
+
         if (chatType === "supergroup") {
             const supergroupChat = ctx.chat;
 
@@ -66,6 +74,25 @@ bot.on("my_chat_member", async (ctx) => {
         } else if (chatType === "group") {
             await handleGroup(ctx, chatType);
         }
+
+        // Update the group in the database
+        let joinedDate = new Date(ctx.session.date_added);
+        if (isNaN(joinedDate.getTime())) {
+            // If not valid, use the current date
+            joinedDate = new Date();
+        }
+        await Group.findOneAndUpdate(
+            {tg_id: ctx.session.group_id},
+            {
+                name: ctx.session.group_name,
+                tg_id: ctx.session.group_id,
+                joined: joinedDate,
+                active: ctx.session.active,
+                invite_link: ctx.session.group_url,
+                is_admin: ctx.session.is_admin,
+            },
+            {upsert: true}
+        );
     }
 });
 
@@ -80,8 +107,24 @@ bot.on("callback_query:data", async (ctx) => {
     }
 });
 
+bot.on("chat_member", async (ctx) => {
+    const newStatus = ctx.chatMember?.new_chat_member.status;
+    const isBot = ctx.chatMember?.new_chat_member.user.is_bot;
+    const newMemberId = ctx.chatMember?.new_chat_member.user.id;
+    const botId = bot.botInfo.id;
+
+    if (newStatus === "administrator" && isBot && newMemberId === botId) {
+        // The bot itself has been promoted to an admin
+        // Retry creating an invite link
+        const chatType = ctx.chat?.type;
+        if (chatType === "supergroup" && !ctx.chat?.username) {
+            await handleSupergroupWithoutUsername(ctx, chatType);
+        }
+    }
+});
+
 bot.command("start", async (ctx) => {
-        await ctx.reply("Hello! I am a bot that can help you manage your groups.");
+    await ctx.reply("Hello! I am a bot that can help you manage your groups.");
 });
 
 // Error handling
@@ -91,6 +134,7 @@ bot.catch((err: BotError<MyContext>) => {
 
 // Start the bot
 run(bot);
+
 // Helper functions
 
 async function handleSupergroupWithoutUsername(ctx: MyContext, chatType: string) {
@@ -113,16 +157,7 @@ async function handleSupergroupWithoutUsername(ctx: MyContext, chatType: string)
         const inviteId = ctx.chat.id;
         await ctx.api.sendMessage(
             ADMIN_GROUP,
-            `Bot added to a ${chatType}, but couldn't create an invite link due to insufficient permissions ${ctx.chat.title}.`, {
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            { text: "Accept", callback_data: `accept_${inviteId}` },
-                            { text: "Deny", callback_data: `deny_${inviteId}` },
-                        ],
-                    ],
-                },
-            });
+            `Bot added to a ${chatType}, but couldn't create an invite link due to insufficient permissions ${ctx.chat.title}.`);
     }
 }
 
@@ -138,8 +173,8 @@ async function handleSupergroupWithUsername(
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: "Accept", callback_data: `accept_${inviteId}` },
-                        { text: "Deny", callback_data: `deny_${inviteId}` },
+                        {text: "Accept", callback_data: `accept_${inviteId}`},
+                        {text: "Deny", callback_data: `deny_${inviteId}`},
                     ],
                 ],
             },
@@ -175,8 +210,8 @@ async function sendInviteLinkMessage(ctx: MyContext, message: string, inviteId: 
         reply_markup: {
             inline_keyboard: [
                 [
-                    { text: "Accept", callback_data: `accept_${inviteId}` },
-                    { text: "Deny", callback_data: `deny_${inviteId}` },
+                    {text: "Accept", callback_data: `accept_${inviteId}`},
+                    {text: "Deny", callback_data: `deny_${inviteId}`},
                 ],
             ],
         },
@@ -184,7 +219,7 @@ async function sendInviteLinkMessage(ctx: MyContext, message: string, inviteId: 
 }
 
 async function handleAcceptAction(ctx: MyContext) {
-    await ctx.answerCallbackQuery({ text: "You accepted the invite." });
+    await ctx.answerCallbackQuery({text: "You accepted the invite."});
 
     // Extract the invite ID from the callback data
     const inviteId = ctx.callbackQuery?.data?.split("_")[1];
@@ -200,6 +235,16 @@ async function handleAcceptAction(ctx: MyContext) {
     ctx.session.group_id = inviteId;
     ctx.session.date_modified = new Date().toISOString();
 
+    // Update the group in the database
+    await Group.updateOne(
+        {tg_id: ctx.session.group_id},
+        {
+            active: ctx.session.active,
+            date_modified: ctx.session.date_modified,
+            invite_link: ctx.session.group_url,
+        }
+    );
+
     // Send a message to the admin group indicating the acceptance
     await ctx.api.sendMessage(
         ADMIN_GROUP,
@@ -208,7 +253,7 @@ async function handleAcceptAction(ctx: MyContext) {
 }
 
 async function handleDenyAction(ctx: MyContext) {
-    await ctx.answerCallbackQuery({ text: "You denied the invite." });
+    await ctx.answerCallbackQuery({text: "You denied the invite."});
 
     // Extract the invite ID from the callback data
     const inviteId = ctx.callbackQuery?.data?.split("_")[1];
@@ -217,11 +262,22 @@ async function handleDenyAction(ctx: MyContext) {
         console.error('Invite ID is undefined');
         return;
     }
+
     // Update the session data to mark the invitation as denied
     ctx.session.active = false;
     ctx.session.banned = true;
-    ctx.session.group_id = inviteId
+    ctx.session.group_id = inviteId;
     ctx.session.date_modified = new Date().toISOString();
+
+    // Update the group in the database
+    await Group.updateOne(
+        {tg_id: ctx.session.group_id},
+        {
+            active: ctx.session.active,
+            banned: ctx.session.banned,
+            date_modified: ctx.session.date_modified,
+        }
+    );
 
     // Send a message to the admin group indicating the denial
     await ctx.api.sendMessage(

@@ -1,3 +1,4 @@
+// deno-lint-ignore-file no-unused-vars
 import {
     Bot,
     Context,
@@ -7,8 +8,8 @@ import {
 } from "https://deno.land/x/grammy@v1.21.1/mod.ts";
 import "https://deno.land/std@0.221.0/dotenv/load.ts";
 import { freeStorage } from "https://deno.land/x/grammy_storages@v2.4.2/free/src/mod.ts";
-import { Chat } from "https://deno.land/x/grammy_types@v3.5.2/manage.ts";
-import SupergroupChat = Chat.SupergroupChat;
+import { run } from "https://deno.land/x/grammy_runner@v2.0.3/mod.ts";
+
 
 const ADMIN_GROUP = -1002103808557;
 
@@ -18,7 +19,7 @@ type SessionData = {
     group_name: string;
     active: boolean;
     banned: boolean;
-    group_id: number;
+    group_id: string;
     is_admin: boolean;
     date_added: string;
     date_modified: string;
@@ -37,7 +38,7 @@ bot.use(
             group_name: "",
             active: false,
             banned: false,
-            group_id: 1,
+            group_id: 'none',
             is_admin: false,
             date_added: "",
             date_modified: "",
@@ -55,7 +56,7 @@ bot.on("my_chat_member", async (ctx) => {
 
     if ((newStatus === "member" || newStatus === "administrator") && isBot) {
         if (chatType === "supergroup") {
-            const supergroupChat = ctx.chat as SupergroupChat;
+            const supergroupChat = ctx.chat;
 
             if (!supergroupChat.username) {
                 await handleSupergroupWithoutUsername(ctx, chatType);
@@ -79,14 +80,17 @@ bot.on("callback_query:data", async (ctx) => {
     }
 });
 
+bot.command("start", async (ctx) => {
+        await ctx.reply("Hello! I am a bot that can help you manage your groups.");
+});
+
 // Error handling
 bot.catch((err: BotError<MyContext>) => {
     console.error(err.error);
 });
 
 // Start the bot
-bot.start();
-
+run(bot);
 // Helper functions
 
 async function handleSupergroupWithoutUsername(ctx: MyContext, chatType: string) {
@@ -97,7 +101,7 @@ async function handleSupergroupWithoutUsername(ctx: MyContext, chatType: string)
         return await ctx.reply("This is not a group.");
     }
     try {
-       
+
         const inviteLink = await ctx.api.createChatInviteLink(ctx.chat?.id ?? "h");
         const inviteId = ctx.chat.id;
         const message = `Bot added to a ${chatType}. Invite link: ${inviteLink.invite_link}`;
@@ -106,20 +110,41 @@ async function handleSupergroupWithoutUsername(ctx: MyContext, chatType: string)
     } catch (error) {
         console.error("Failed to create an invite link. Error: ", error);
         await ctx.reply("I can't create an invite link. Please check my permissions.");
+        const inviteId = ctx.chat.id;
         await ctx.api.sendMessage(
             ADMIN_GROUP,
-            `Bot added to a ${chatType}, but couldn't create an invite link due to insufficient permissions ${ctx.chat.title}.`
-        );
+            `Bot added to a ${chatType}, but couldn't create an invite link due to insufficient permissions ${ctx.chat.title}.`, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: "Accept", callback_data: `accept_${inviteId}` },
+                            { text: "Deny", callback_data: `deny_${inviteId}` },
+                        ],
+                    ],
+                },
+            });
     }
 }
 
 async function handleSupergroupWithUsername(
-    ctx: MyContext,
+    ctx: MyContext | undefined,
     chatType: string,
-    supergroupChat: SupergroupChat
+    supergroupChat: any
 ) {
-    const message = `Bot added to a supergroup with public username @${supergroupChat.username}. No invite link generated.`;
-    await ctx.api.sendMessage(ADMIN_GROUP, message);
+    if (ctx?.chat) {
+        const message = `Bot added to a supergroup with public username @${supergroupChat.username}. No invite link generated.`;
+        const inviteId = ctx.chat.id;
+        await ctx.api.sendMessage(ADMIN_GROUP, message, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "Accept", callback_data: `accept_${inviteId}` },
+                        { text: "Deny", callback_data: `deny_${inviteId}` },
+                    ],
+                ],
+            },
+        });
+    }
 }
 
 async function handleGroup(ctx: MyContext, chatType: string) {
@@ -160,11 +185,47 @@ async function sendInviteLinkMessage(ctx: MyContext, message: string, inviteId: 
 
 async function handleAcceptAction(ctx: MyContext) {
     await ctx.answerCallbackQuery({ text: "You accepted the invite." });
-    // Further processing, like saving the invitation as accepted
+
+    // Extract the invite ID from the callback data
+    const inviteId = ctx.callbackQuery?.data?.split("_")[1];
+
+    if (!inviteId) {
+        console.error('Invite ID is undefined');
+        return;
+    }
+
+    // Update the session data to mark the invitation as accepted
+    ctx.session.active = true;
+    ctx.session.banned = false;
+    ctx.session.group_id = inviteId;
+    ctx.session.date_modified = new Date().toISOString();
+
+    // Send a message to the admin group indicating the acceptance
+    await ctx.api.sendMessage(
+        ADMIN_GROUP,
+        `The invitation for group ID ${inviteId} has been accepted.`
+    );
 }
 
 async function handleDenyAction(ctx: MyContext) {
     await ctx.answerCallbackQuery({ text: "You denied the invite." });
-    // Further processing, like marking the invitation as denied
-}
 
+    // Extract the invite ID from the callback data
+    const inviteId = ctx.callbackQuery?.data?.split("_")[1];
+
+    if (!inviteId) {
+        console.error('Invite ID is undefined');
+        return;
+    }
+    // Update the session data to mark the invitation as denied
+    ctx.session.active = false;
+    ctx.session.banned = true;
+    ctx.session.group_id = inviteId
+    ctx.session.date_modified = new Date().toISOString();
+
+    // Send a message to the admin group indicating the denial
+    await ctx.api.sendMessage(
+        ADMIN_GROUP,
+        `The invitation for group ID ${inviteId} has been denied.`
+    );
+}

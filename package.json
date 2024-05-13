@@ -3,7 +3,7 @@
 		"typescript": "^5.4.5"
 	},
 	"dependencies": {
-		"grammy": "^1.22.4",
+		"grammy": "^1.23.0",
 		"mongoose": "^8.3.1"
 	}
 }
